@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Atom, CircleHelp, Copy, Download, Eraser, Link2, MoreHorizontal,
-  MousePointer2, Redo2, RotateCcw, Trash2, Undo2,
+  MousePointer2, Redo2, Trash2, Undo2,
 } from 'lucide-react'
 
 type ElementSymbol = 'C' | 'H' | 'O' | 'N' | 'S' | 'P' | 'F' | 'Cl' | 'Br' | 'I'
@@ -14,6 +14,7 @@ type ElementDrag = { element: ElementSymbol; x: number; y: number; pointerId: nu
 const WIDTH = 1040
 const HEIGHT = 660
 const GRID_SIZE = 30
+const EXPORT_PADDING = 18
 const elements: { symbol: ElementSymbol; name: string; tone: string }[] = [
   { symbol: 'C', name: 'Carbon', tone: 'carbon' },
   { symbol: 'H', name: 'Hydrogen', tone: 'hydrogen' },
@@ -54,6 +55,7 @@ function App() {
   const [elementDrag, setElementDrag] = useState<ElementDrag | null>(null)
   const [draggingAtom, setDraggingAtom] = useState<string | null>(null)
   const [showMore, setShowMore] = useState(false)
+  const [showHowItWorks, setShowHowItWorks] = useState(false)
   const [message, setMessage] = useState('Drag an element onto the page to begin.')
   const svgRef = useRef<SVGSVGElement>(null)
   const dragOriginal = useRef<Drawing | null>(null)
@@ -164,33 +166,60 @@ function App() {
   const exportImage = async (copy = false) => {
     const svg = svgRef.current
     if (!svg) return
-    const clone = svg.cloneNode(true) as SVGSVGElement
-    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-    clone.querySelectorAll('[data-ui="true"]').forEach((element) => element.remove())
-    const source = new XMLSerializer().serializeToString(clone)
-    const image = new Image()
-    const url = URL.createObjectURL(new Blob([source], { type: 'image/svg+xml;charset=utf-8' }))
-    await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('Could not render drawing')); image.src = url })
-    const canvas = document.createElement('canvas')
-    canvas.width = WIDTH * 2
-    canvas.height = HEIGHT * 2
-    const context = canvas.getContext('2d')!
-    context.scale(2, 2)
-    context.drawImage(image, 0, 0, WIDTH, HEIGHT)
-    URL.revokeObjectURL(url)
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-    if (!blob) return
-    if (copy && navigator.clipboard && 'ClipboardItem' in window) {
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-      setMessage('Image copied. Paste it into your document.')
-    } else {
+    const visibleElements = Array.from(svg.querySelectorAll<SVGGraphicsElement>('.bond-line, .atom-label'))
+    if (!visibleElements.length) {
+      setMessage('Add an atom before exporting your structure.')
+      return
+    }
+
+    const bounds = visibleElements.map((element) => element.getBBox()).reduce((combined, box) => ({
+      left: Math.min(combined.left, box.x),
+      top: Math.min(combined.top, box.y),
+      right: Math.max(combined.right, box.x + box.width),
+      bottom: Math.max(combined.bottom, box.y + box.height),
+    }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity })
+    const x = bounds.left - EXPORT_PADDING
+    const y = bounds.top - EXPORT_PADDING
+    const width = bounds.right - bounds.left + EXPORT_PADDING * 2
+    const height = bounds.bottom - bounds.top + EXPORT_PADDING * 2
+    const content = svg.querySelector('[data-export-content]')!.cloneNode(true) as SVGGElement
+    content.querySelectorAll('[data-ui="true"]').forEach((element) => element.remove())
+
+    const exportedSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    exportedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    exportedSvg.setAttribute('viewBox', `${x} ${y} ${width} ${height}`)
+    exportedSvg.setAttribute('width', String(Math.ceil(width)))
+    exportedSvg.setAttribute('height', String(Math.ceil(height)))
+    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style')
+    style.textContent = '.bond-line{stroke:#263536;stroke-width:3;stroke-linecap:round}.atom-label{fill:#213133;font:600 28px Fraunces,Georgia,serif;paint-order:stroke;stroke:#fffdf7;stroke-width:7px;stroke-linejoin:round}'
+    exportedSvg.append(style, content)
+
+    const source = new XMLSerializer().serializeToString(exportedSvg)
+    const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' })
+    if (!copy) {
       const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
-      link.download = 'molecule-notebook.png'
+      link.href = URL.createObjectURL(svgBlob)
+      link.download = 'molecule-notebook.svg'
       link.click()
       URL.revokeObjectURL(link.href)
-      setMessage('PNG downloaded.')
+      setMessage('Cropped SVG downloaded.')
+      return
     }
+
+    const image = new Image()
+    const url = URL.createObjectURL(svgBlob)
+    await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error('Could not render drawing')); image.src = url })
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.ceil(width * 2)
+    canvas.height = Math.ceil(height * 2)
+    const context = canvas.getContext('2d')!
+    context.scale(2, 2)
+    context.drawImage(image, 0, 0, width, height)
+    URL.revokeObjectURL(url)
+    const pngBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    if (!pngBlob || !navigator.clipboard || !('ClipboardItem' in window)) return
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+    setMessage('Cropped image copied. Paste it into your document.')
   }
 
   useEffect(() => {
@@ -200,7 +229,10 @@ function App() {
         if (event.shiftKey) redo()
         else undo()
       }
-      if (event.key === 'Escape') setBondStart(null)
+      if (event.key === 'Escape') {
+        setBondStart(null)
+        setShowHowItWorks(false)
+      }
     }
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
@@ -246,9 +278,9 @@ function App() {
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><Atom size={25} /></span><span>Molecule <b>Notebook</b></span></div>
         <div className="header-actions">
-          <button className="text-button" onClick={() => alert('Drag elements onto the grid. Use Move mode to reposition them, Bond mode to connect atoms or change bond order, and Delete mode to remove atoms or bonds.')}><CircleHelp size={18} /> How it works</button>
+          <button className="text-button" onClick={() => setShowHowItWorks(true)}><CircleHelp size={18} /> How it works</button>
           <button className="outline-button" onClick={() => exportImage(true)}><Copy size={17} /> Copy image</button>
-          <button className="download-button" onClick={() => exportImage()}><Download size={17} /> Download PNG</button>
+          <button className="download-button" onClick={() => exportImage()}><Download size={17} /> Download SVG</button>
         </div>
       </header>
 
@@ -278,28 +310,42 @@ function App() {
             <svg ref={svgRef} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className={`molecule-canvas ${tool}-mode`} role="application" aria-label="Chemical structure drawing canvas" onPointerMove={(event) => { if (draggingAtom) { const point = pointInCanvas(event.clientX, event.clientY); updateAtom(draggingAtom, point.x, point.y) } }} onPointerUp={() => { if (draggingAtom && dragOriginal.current) { setPast((items) => [...items, dragOriginal.current!]); setFuture([]); dragOriginal.current = null; setDraggingAtom(null) } }} onPointerDown={(event) => { if (event.target === event.currentTarget) setBondStart(null) }}>
               <defs><pattern id="paper-grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse"><path d={`M ${GRID_SIZE} 0 L 0 0 0 ${GRID_SIZE}`} fill="none" stroke="#d9d4c9" strokeWidth="1" opacity=".62" /></pattern></defs>
               <rect width={WIDTH} height={HEIGHT} fill="#fffdf7" /><rect width={WIDTH} height={HEIGHT} fill="url(#paper-grid)" />
-              {drawing.bonds.map((bond) => {
-                const a = drawing.atoms.find((atom) => atom.id === bond.a); const b = drawing.atoms.find((atom) => atom.id === bond.b)
-                if (!a || !b) return null
-                return <g key={bond.id} onPointerDown={(event) => { event.stopPropagation(); chooseBond(bond) }} className="bond-group" aria-label={`${bond.order} bond`}>
-                  <line data-ui="true" x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth="28" />
-                  {bondLines(a, b, bond.order).map((line, index) => <line key={index} {...line} className="bond-line" />)}
-                </g>
-              })}
-              {drawing.atoms.map((atom) => {
-                return <g key={atom.id} className={`atom-group ${bondStart === atom.id ? 'bond-start' : ''}`} onPointerDown={(event) => { event.stopPropagation(); chooseAtom(atom.id); if (tool === 'move') { dragOriginal.current = cloneDrawing(drawing); setDraggingAtom(atom.id); event.currentTarget.setPointerCapture(event.pointerId) } }}>
-                  <circle data-ui="true" cx={atom.x} cy={atom.y} r="24" fill="transparent" />
-                  <text x={atom.x} y={atom.y + 10} textAnchor="middle" className="atom-label">{atom.element}</text>
-                </g>
-              })}
+              <g data-export-content="true">
+                {drawing.bonds.map((bond) => {
+                  const a = drawing.atoms.find((atom) => atom.id === bond.a); const b = drawing.atoms.find((atom) => atom.id === bond.b)
+                  if (!a || !b) return null
+                  return <g key={bond.id} onPointerDown={(event) => { event.stopPropagation(); chooseBond(bond) }} className="bond-group" aria-label={`${bond.order} bond`}>
+                    <line data-ui="true" x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth="28" />
+                    {bondLines(a, b, bond.order).map((line, index) => <line key={index} {...line} className="bond-line" />)}
+                  </g>
+                })}
+                {drawing.atoms.map((atom) => {
+                  return <g key={atom.id} className={`atom-group ${bondStart === atom.id ? 'bond-start' : ''}`} onPointerDown={(event) => { event.stopPropagation(); chooseAtom(atom.id); if (tool === 'move') { dragOriginal.current = cloneDrawing(drawing); setDraggingAtom(atom.id); event.currentTarget.setPointerCapture(event.pointerId) } }}>
+                    <circle data-ui="true" cx={atom.x} cy={atom.y} r="24" fill="transparent" />
+                    <text x={atom.x} y={atom.y + 10} textAnchor="middle" className="atom-label">{atom.element}</text>
+                  </g>
+                })}
+              </g>
               {drawing.atoms.length === 0 && <g data-ui="true" className="empty-state"><circle cx="520" cy="290" r="43" fill="#f1ede3" /><Atom x="500" y="270" width="40" height="40" color="#a29b8b" /><text x="520" y="365" textAnchor="middle">Your structure will appear here</text><text x="520" y="394" textAnchor="middle" className="empty-subtitle">Drag C, H, or O from the element tray to get started.</text></g>}
             </svg>
           </div>
-          <div className="history-bar"><div><button onClick={undo} disabled={!past.length} aria-label="Undo"><Undo2 size={18} /></button><button onClick={redo} disabled={!future.length} aria-label="Redo"><Redo2 size={18} /></button><span className="shortcut-hint">Undo & redo</span></div><div><button className="clear-button" disabled={!drawing.atoms.length} onClick={() => { if (confirm('Clear the entire structure?')) { commit({ atoms: [], bonds: [] }); setBondStart(null); setMessage('Fresh page ready.') } }}><Trash2 size={16} /> Clear page</button><button className="reset-button" onClick={() => { setTool('move'); setBondStart(null); setMessage('Drag an atom to move it on the grid.') }}><RotateCcw size={16} /> Reset tool</button></div></div>
+          <div className="history-bar"><div><button onClick={undo} disabled={!past.length} aria-label="Undo"><Undo2 size={18} /></button><button onClick={redo} disabled={!future.length} aria-label="Redo"><Redo2 size={18} /></button><span className="shortcut-hint">Undo & redo</span></div><div><button className="clear-button" disabled={!drawing.atoms.length} onClick={() => { if (confirm('Clear the entire structure?')) { commit({ atoms: [], bonds: [] }); setBondStart(null); setMessage('Fresh page ready.') } }}><Trash2 size={16} /> Clear page</button></div></div>
         </section>
       </section>
       <footer><span>Made for classroom chemistry</span><span>Structures stay in this browser until you export them.</span></footer>
       {elementDrag && <div className="element-drag-preview" style={{ left: elementDrag.x, top: elementDrag.y }} aria-hidden="true">{elementDrag.element}</div>}
+      {showHowItWorks && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowHowItWorks(false)}>
+        <section className="how-it-works-modal" role="dialog" aria-modal="true" aria-labelledby="how-it-works-title" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="modal-heading"><div><p className="eyebrow">Molecule Notebook</p><h2 id="how-it-works-title">How it works</h2></div><button className="modal-close" onClick={() => setShowHowItWorks(false)} aria-label="Close instructions">&times;</button></div>
+          <ol>
+            <li><b>Drag</b> an element from the tray onto the grid.</li>
+            <li>Use <b>Move mode</b> to reposition atoms.</li>
+            <li>Use <b>Bond mode</b> to connect two atoms. Tap an existing bond to change it from single to double or triple.</li>
+            <li>Use <b>Delete mode</b> to remove an atom or bond.</li>
+          </ol>
+          <button className="modal-done" onClick={() => setShowHowItWorks(false)}>Got it</button>
+        </section>
+      </div>}
     </main>
   )
 }
