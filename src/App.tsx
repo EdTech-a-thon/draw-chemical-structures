@@ -9,6 +9,7 @@ type AtomData = { id: string; element: ElementSymbol; x: number; y: number }
 type Bond = { id: string; a: string; b: string; order: 1 | 2 | 3 }
 type Drawing = { atoms: AtomData[]; bonds: Bond[] }
 type Tool = 'move' | 'bond' | 'delete'
+type ElementDrag = { element: ElementSymbol; x: number; y: number; pointerId: number }
 
 const WIDTH = 1040
 const HEIGHT = 660
@@ -50,12 +51,14 @@ function App() {
   const [tool, setTool] = useState<Tool>('move')
   const [selectedElement, setSelectedElement] = useState<ElementSymbol>('C')
   const [bondStart, setBondStart] = useState<string | null>(null)
-  const [draggedElement, setDraggedElement] = useState<ElementSymbol | null>(null)
+  const [elementDrag, setElementDrag] = useState<ElementDrag | null>(null)
   const [draggingAtom, setDraggingAtom] = useState<string | null>(null)
   const [showMore, setShowMore] = useState(false)
   const [message, setMessage] = useState('Drag an element onto the page to begin.')
   const svgRef = useRef<SVGSVGElement>(null)
   const dragOriginal = useRef<Drawing | null>(null)
+  const elementDragRef = useRef<ElementDrag | null>(null)
+  const addAtomRef = useRef<(element: ElementSymbol, x: number, y: number) => void>(() => undefined)
 
   const commit = (next: Drawing) => {
     setPast((items) => [...items, cloneDrawing(drawing)])
@@ -67,11 +70,11 @@ function App() {
     setDrawing((current) => ({ ...current, atoms: current.atoms.map((atom) => atom.id === id ? { ...atom, x, y } : atom) }))
   }
 
-  const pointInCanvas = (event: React.PointerEvent<SVGSVGElement>) => {
+  const pointInCanvas = (clientX: number, clientY: number) => {
     const svg = svgRef.current!
     const point = svg.createSVGPoint()
-    point.x = event.clientX
-    point.y = event.clientY
+    point.x = clientX
+    point.y = clientY
     const transformed = point.matrixTransform(svg.getScreenCTM()!.inverse())
     return {
       x: Math.max(GRID_SIZE, Math.min(WIDTH - GRID_SIZE, Math.round(transformed.x / GRID_SIZE) * GRID_SIZE)),
@@ -83,6 +86,16 @@ function App() {
     const id = crypto.randomUUID()
     commit({ ...drawing, atoms: [...drawing.atoms, { id, element, x, y }] })
     setMessage(`${element} placed on the grid. Drag it to reposition.`)
+  }
+  addAtomRef.current = addAtom
+
+  const startElementDrag = (event: React.PointerEvent, element: ElementSymbol) => {
+    event.preventDefault()
+    setSelectedElement(element)
+    setShowMore(false)
+    const nextDrag = { element, x: event.clientX, y: event.clientY, pointerId: event.pointerId }
+    elementDragRef.current = nextDrag
+    setElementDrag(nextDrag)
   }
 
   const chooseAtom = (id: string) => {
@@ -193,6 +206,41 @@ function App() {
     return () => window.removeEventListener('keydown', keydown)
   })
 
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const currentDrag = elementDragRef.current
+      if (!currentDrag || event.pointerId !== currentDrag.pointerId) return
+      event.preventDefault()
+      const nextDrag = { ...currentDrag, x: event.clientX, y: event.clientY }
+      elementDragRef.current = nextDrag
+      setElementDrag(nextDrag)
+    }
+    const end = (event: PointerEvent) => {
+      const currentDrag = elementDragRef.current
+      if (!currentDrag || event.pointerId !== currentDrag.pointerId) return
+      const svg = svgRef.current
+      if (svg) {
+        const bounds = svg.getBoundingClientRect()
+        const isOverCanvas = event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom
+        if (isOverCanvas) {
+          const point = pointInCanvas(event.clientX, event.clientY)
+          addAtomRef.current(currentDrag.element, point.x, point.y)
+        }
+      }
+      elementDragRef.current = null
+      setElementDrag(null)
+    }
+
+    window.addEventListener('pointermove', move, { passive: false })
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+    }
+  }, [])
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -208,11 +256,11 @@ function App() {
         <aside className="sidebar" aria-label="Drawing tools">
           <div className="tool-section"><p className="eyebrow">Build your structure</p><h1>Element tray</h1><p className="sidebar-copy">Drag an element from here onto your page.</p></div>
           <div className="element-stack">
-            {elements.map((element) => <button key={element.symbol} draggable onDragStart={() => setDraggedElement(element.symbol)} onPointerDown={() => setSelectedElement(element.symbol)} className={`element-card ${element.tone} ${selectedElement === element.symbol ? 'selected-element' : ''}`} aria-label={`Drag ${element.name} onto canvas`}><strong>{element.symbol}</strong><span>{element.name}</span><span className="drag-dots">::::</span></button>)}
+            {elements.map((element) => <button key={element.symbol} onPointerDown={(event) => startElementDrag(event, element.symbol)} className={`element-card ${element.tone} ${selectedElement === element.symbol ? 'selected-element' : ''}`} aria-label={`Drag ${element.name} onto canvas`}><strong>{element.symbol}</strong><span>{element.name}</span><span className="drag-dots">::::</span></button>)}
           </div>
           <div className="more-wrap">
             <button className="more-elements" onClick={() => setShowMore(!showMore)}><MoreHorizontal size={19} /> More elements</button>
-            {showMore && <div className="more-palette">{extraElements.map((element) => <button key={element} draggable onDragStart={() => setDraggedElement(element)} onClick={() => { setSelectedElement(element); setShowMore(false) }}>{element}</button>)}</div>}
+            {showMore && <div className="more-palette">{extraElements.map((element) => <button key={element} onPointerDown={(event) => startElementDrag(event, element)}>{element}</button>)}</div>}
           </div>
           <div className="side-rule" />
           <div className="tool-section"><p className="eyebrow">Connect and edit</p><h2>Tools</h2></div>
@@ -227,7 +275,7 @@ function App() {
         <section className="drawing-area">
           <div className="canvas-topline"><div><span className="status-dot" /> <span>{message}</span></div><span className="atom-count">{drawing.atoms.length} atom{drawing.atoms.length === 1 ? '' : 's'}</span></div>
           <div className="canvas-frame">
-            <svg ref={svgRef} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className={`molecule-canvas ${tool}-mode`} role="application" aria-label="Chemical structure drawing canvas" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const point = pointInCanvas(event as unknown as React.PointerEvent<SVGSVGElement>); if (draggedElement) addAtom(draggedElement, point.x, point.y); setDraggedElement(null) }} onPointerMove={(event) => { if (draggingAtom) { const point = pointInCanvas(event); updateAtom(draggingAtom, point.x, point.y) } }} onPointerUp={() => { if (draggingAtom && dragOriginal.current) { setPast((items) => [...items, dragOriginal.current!]); setFuture([]); dragOriginal.current = null; setDraggingAtom(null) } }} onPointerDown={(event) => { if (event.target === event.currentTarget) setBondStart(null) }}>
+            <svg ref={svgRef} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className={`molecule-canvas ${tool}-mode`} role="application" aria-label="Chemical structure drawing canvas" onPointerMove={(event) => { if (draggingAtom) { const point = pointInCanvas(event.clientX, event.clientY); updateAtom(draggingAtom, point.x, point.y) } }} onPointerUp={() => { if (draggingAtom && dragOriginal.current) { setPast((items) => [...items, dragOriginal.current!]); setFuture([]); dragOriginal.current = null; setDraggingAtom(null) } }} onPointerDown={(event) => { if (event.target === event.currentTarget) setBondStart(null) }}>
               <defs><pattern id="paper-grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse"><path d={`M ${GRID_SIZE} 0 L 0 0 0 ${GRID_SIZE}`} fill="none" stroke="#d9d4c9" strokeWidth="1" opacity=".62" /></pattern></defs>
               <rect width={WIDTH} height={HEIGHT} fill="#fffdf7" /><rect width={WIDTH} height={HEIGHT} fill="url(#paper-grid)" />
               {drawing.bonds.map((bond) => {
@@ -251,6 +299,7 @@ function App() {
         </section>
       </section>
       <footer><span>Made for classroom chemistry</span><span>Structures stay in this browser until you export them.</span></footer>
+      {elementDrag && <div className="element-drag-preview" style={{ left: elementDrag.x, top: elementDrag.y }} aria-hidden="true">{elementDrag.element}</div>}
     </main>
   )
 }
